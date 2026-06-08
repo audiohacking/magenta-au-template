@@ -1,0 +1,8 @@
+{
+  "name": "magenta-au-template",
+  "private": true,
+  "workspaces": [
+    "magenta-realtime/examples/common/react_ui",
+    "magenta-realtime/examples/jam/ui"
+  ]
+}
