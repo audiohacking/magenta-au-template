@@ -514,7 +514,7 @@ function App() {
 
         // Build effective preset list using user overrides that arrived in this same state update
         const userSolo = state.savedUserPresets?.solo ?? {};
-        const userMagenta Template = state.savedUserPresets?.jam ?? {};
+        const userJam = state.savedUserPresets?.jam ?? {};
         const factoryList = solo ? INSTRUMENT_SUGGESTIONS : PROMPT_SUGGESTIONS;
         const effectiveList = factoryList.map((text, i) => {
           const overrides = solo ? userSolo : userJam;
@@ -732,7 +732,7 @@ function App() {
   const savedPresetText = currentPresetList[rockerIndex] ?? '';
   const promptIsDirty = isPromptEdited && promptText.trim() !== '' && promptText !== savedPresetText;
 
-  // Tab style helper for the Solo/Magenta Template switcher
+  // Tab style helper for the Solo/Jam switcher
   const modeTabStyle = (active: boolean): React.CSSProperties => ({
     height: '100%',
     padding: '0 24px',
@@ -827,7 +827,7 @@ function App() {
             flexDirection: 'column',
             gap: '16px',
           }}>
-            {/* Solo / Magenta Template Tab Switcher */}
+            {/* Solo / Jam Tab Switcher */}
             <div style={{ display: 'flex' }}>
               <div
                 className="jam-box"
