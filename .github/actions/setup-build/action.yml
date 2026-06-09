@@ -17,7 +17,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/.ccache
-        key: magenta-au-template-ccache-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'core-patches/**', 'ui-patches/**', 'magenta-realtime/core/**', 'MagentaAU_AudioUnit.mm', 'MagentaAU_ViewController.mm', 'MagentaAU_HostApp.mm') }}
+        key: magenta-au-template-ccache-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'core-patches/**', 'common-patches/**', 'ui-patches/**', 'magenta-realtime/core/**', 'MagentaAU_AudioUnit.mm', 'MagentaAU_ViewController.mm', 'MagentaAU_HostApp.mm') }}
         restore-keys: |
           magenta-au-template-ccache-${{ runner.os }}-
 

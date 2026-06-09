@@ -16,6 +16,7 @@ Guide for AI agents and developers bootstrapping new **Magenta RealTime** AUv3 p
 | Host app for `pluginkit` registration | `MagentaAU_HostApp.mm` |
 | React UI (Jam example + overlay) | `magenta-realtime/examples/jam/ui` + `ui-patches/` |
 | MLX inference | `magenta-realtime/core` + `core-patches/` |
+| Model loading | `common-patches/` → `examples/common/objc/` |
 | Build / deploy / CI / release | `CMakeLists.txt`, `.github/`, `scripts/` |
 
 **Reference plugins (read-only — do not modify when working on a fork):**
@@ -48,6 +49,9 @@ magenta-au-template/
 ├── core-patches/                  # Overlay onto magenta-realtime/core at configure time
 │   └── core/src/realtime_runner.cpp   # Bounce-safe ring-buffer drain
 │   └── core/include/magentart/mlx_gpu_guard.h  # Process-wide MLX GPU mutex
+├── common-patches/                # Model path resolution + resource validation overlays
+│   └── examples/common/objc/MagentaModelDownloader.{h,mm}
+│   └── examples/common/objc/MagentaModelManager.{h,mm}
 ├── ui-patches/App.tsx             # Optional React UI overlay (copied at configure time)
 │
 ├── assets/AppIcon.icns

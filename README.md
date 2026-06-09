@@ -33,7 +33,7 @@ Open `~/Applications/Magenta AU Template (AU).app` once to register the extensio
 
 Models and shared resources live under `~/Documents/Magenta/magenta-rt-v2/` (same as Jam/MRT2 standalone).
 
-See [INSTALL.md](INSTALL.md) for DAW setup and [AGENTS.md](AGENTS.md) for agent/developer bootstrap guide.
+See [INSTALL.md](INSTALL.md) for DAW setup, [AGENTS.md](AGENTS.md) for agent/developer bootstrap guide, and [MODEL_LOADING.md](MODEL_LOADING.md) for sandbox model/resource path behavior.
 
 ## Dev UI (HMR)
 

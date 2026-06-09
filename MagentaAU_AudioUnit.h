@@ -24,6 +24,7 @@ using magentart::core::RealtimeRunner;
 - (std::atomic<bool>*)soloMode;
 - (std::atomic<float>*)cfgNotesSliderValue;
 - (void)applyPromptTextToEngine:(NSString*)prompt;
+- (BOOL)hasInitializedAssets;
 
 @end
 

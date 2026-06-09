@@ -50,31 +50,61 @@ static void MGRTSaveModelsFolderBookmark(NSString* path, NSData* bookmarkData) {
     [defaults setObject:path forKey:@"MagentaRT_ModelFolderPath"];
 }
 
-static void MGRTClearModelsFolderBookmarks(void) {
-    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
-    [defaults removeObjectForKey:@"DownloadFolderBookmark"];
-    [defaults removeObjectForKey:@"DownloadFolderPath"];
-    [defaults removeObjectForKey:@"MagentaRT_ModelFolderBookmark"];
-    [defaults removeObjectForKey:@"MagentaRT_ModelFolderPath"];
+static NSURL* MGRTURLFromPath(NSString* path) {
+    return path.length > 0 ? [NSURL fileURLWithPath:path isDirectory:YES] : nil;
 }
 
-/// If `baseURL` has no models directly, try a `models/` child (e.g. user picked magenta-rt-v2 root).
+static NSArray<NSURL*>* MGRTModelsSearchCandidates(NSURL* baseURL) {
+    NSMutableOrderedSet<NSURL*>* candidates = [NSMutableOrderedSet orderedSet];
+    void (^addPath)(NSString*) = ^(NSString* path) {
+        NSURL* url = MGRTURLFromPath(path);
+        if (url) [candidates addObject:url];
+    };
+
+    if (baseURL) {
+        [candidates addObject:baseURL];
+        addPath([baseURL.path stringByAppendingPathComponent:@"models"]);
+        addPath([baseURL.path stringByAppendingPathComponent:@"magenta-rt-v2/models"]);
+    }
+
+    for (NSString* path in [MagentaModelManager defaultModelsSearchPaths]) {
+        addPath(path);
+        addPath([path stringByAppendingPathComponent:@"models"]);
+        addPath([path stringByAppendingPathComponent:@"magenta-rt-v2/models"]);
+    }
+
+    return candidates.array;
+}
+
+/// Resolve the first directory under `baseURL` (or standard Magenta layouts) that contains models.
 static NSURL* MGRTEffectiveModelsDirectoryURL(NSURL* baseURL) {
-    if (!baseURL) return nil;
-
-    NSArray<NSString*>* direct = [MagentaModelManager listLocalModelsInDirectory:baseURL];
-    if (direct.count > 0) return baseURL;
-
-    NSURL* modelsSub = [baseURL URLByAppendingPathComponent:@"models" isDirectory:YES];
-    BOOL isDir = NO;
-    if ([[NSFileManager defaultManager] fileExistsAtPath:modelsSub.path isDirectory:&isDir] && isDir) {
-        NSArray<NSString*>* nested = [MagentaModelManager listLocalModelsInDirectory:modelsSub];
-        if (nested.count > 0) {
-            NSLog(@"MagentaAU_AU: using models/ subdirectory under %@", baseURL.path);
-            return modelsSub;
+    for (NSURL* candidate in MGRTModelsSearchCandidates(baseURL)) {
+        NSArray<NSString*>* models = [MagentaModelManager listLocalModelsInDirectory:candidate];
+        if (models.count > 0) {
+            if (baseURL && ![candidate.path isEqualToString:baseURL.path]) {
+                NSLog(@"MagentaAU: using models directory %@", candidate.path);
+            }
+            return candidate;
         }
     }
-    return baseURL;
+    if (baseURL) return baseURL;
+    return MGRTURLFromPath([MagentaModelManager defaultModelsDirectory]);
+}
+
+static NSString* MGRTResolveResourcesPath(void) {
+    for (NSString* path in [MagentaModelDownloader defaultResourceSearchPaths]) {
+        if ([MagentaModelDownloader resourcesValidAtPath:path]) {
+            return path;
+        }
+    }
+    return [NSString stringWithUTF8String:magentart::paths::get_resources_dir().c_str()];
+}
+
+static BOOL MGRTSharedResourcesAvailable(MagentaAUAudioUnit* au) {
+    if ([MagentaModelDownloader areSharedResourcesValid]) {
+        return YES;
+    }
+    return au && [au hasInitializedAssets];
 }
 
 /// Resolve bookmarked (or default) models directory. Optionally returns scoped base URL for stopAccessing.
@@ -93,16 +123,16 @@ static NSURL* MGRTResolveModelsDirectory(BOOL* outAccessGranted, NSURL** outScop
                                 bookmarkDataIsStale:&stale
                                               error:&error];
         if (error) {
-            NSLog(@"MagentaAU_AU: bookmark resolve failed: %@", error.localizedDescription);
+            NSLog(@"MagentaAU: bookmark resolve failed: %@", error.localizedDescription);
         } else if (stale) {
-            NSLog(@"MagentaAU_AU: bookmark is stale for %@", baseURL.path);
+            NSLog(@"MagentaAU: bookmark is stale for %@", baseURL.path);
         }
         if (baseURL) {
             BOOL accessGranted = [baseURL startAccessingSecurityScopedResource];
             if (outAccessGranted) *outAccessGranted = accessGranted;
             if (outScopedBaseURL) *outScopedBaseURL = baseURL;
             if (!accessGranted) {
-                NSLog(@"MagentaAU_AU: startAccessingSecurityScopedResource failed for %@", baseURL.path);
+                NSLog(@"MagentaAU: startAccessingSecurityScopedResource failed for %@", baseURL.path);
             }
         }
     }
@@ -112,35 +142,53 @@ static NSURL* MGRTResolveModelsDirectory(BOOL* outAccessGranted, NSURL** outScop
         baseURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:defaultPath.c_str()]];
     }
 
-    NSURL* effectiveURL = MGRTEffectiveModelsDirectoryURL(baseURL);
-    if (bookmark && baseURL) {
-        NSArray<NSString*>* listed = [MagentaModelManager listLocalModelsInDirectory:effectiveURL];
-        if (listed.count == 0) {
-            NSLog(@"MagentaAU_AU: bookmarked models folder is empty at %@ — clearing stale bookmark", effectiveURL.path);
-            if (outAccessGranted && *outAccessGranted && outScopedBaseURL && *outScopedBaseURL) {
-                [*outScopedBaseURL stopAccessingSecurityScopedResource];
-                if (outAccessGranted) *outAccessGranted = NO;
-                if (outScopedBaseURL) *outScopedBaseURL = nil;
-            }
-            MGRTClearModelsFolderBookmarks();
-            std::string defaultPath = magentart::paths::get_models_dir();
-            baseURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:defaultPath.c_str()]];
-            effectiveURL = MGRTEffectiveModelsDirectoryURL(baseURL);
-        }
-    }
+    return MGRTEffectiveModelsDirectoryURL(baseURL);
+}
 
-    return effectiveURL;
+static void MGRTEnsureCustomResourcesPath(void) {
+    NSString* current = [[NSUserDefaults standardUserDefaults] objectForKey:@"MagentaRT_CustomResourcesPath"];
+    if (current.length > 0 && [MagentaModelDownloader resourcesValidAtPath:current]) {
+        return;
+    }
+    NSString* resolved = MGRTResolveResourcesPath();
+    if ([MagentaModelDownloader resourcesValidAtPath:resolved]) {
+        [[NSUserDefaults standardUserDefaults] setObject:resolved forKey:@"MagentaRT_CustomResourcesPath"];
+        NSLog(@"MagentaAU: using resources at %@", resolved);
+    }
 }
 
 static NSString* MGRTSandboxAwareResourcesPath(NSString* selectedPath) {
-    NSString* customResourcesPath = [selectedPath stringByAppendingPathComponent:@"resources"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:customResourcesPath]) {
-        return customResourcesPath;
+    if (selectedPath.length == 0) {
+        return MGRTResolveResourcesPath();
     }
-    NSString* home = NSHomeDirectory();
-    NSRange range = [home rangeOfString:@"/Library/Containers/"];
-    NSString* realHome = (range.location != NSNotFound) ? [home substringToIndex:range.location] : home;
-    return [realHome stringByAppendingPathComponent:@"Documents/Magenta/magenta-rt-v2/resources"];
+
+    NSArray<NSString*>* candidates = @[
+        selectedPath,
+        [selectedPath stringByAppendingPathComponent:@"resources"],
+        [selectedPath stringByAppendingPathComponent:@"magenta-rt-v2/resources"],
+    ];
+    for (NSString* candidate in candidates) {
+        if ([MagentaModelDownloader resourcesValidAtPath:candidate]) {
+            return candidate;
+        }
+    }
+    return MGRTResolveResourcesPath();
+}
+
+static NSString* MGRTPreferredModelName(NSArray<NSString*>* modelFiles) {
+    if (modelFiles.count == 0) return nil;
+    NSString* preferred = [[NSUserDefaults standardUserDefaults] stringForKey:@"LoadedModelName"];
+    if (preferred.length > 0 && [modelFiles containsObject:preferred]) {
+        return preferred;
+    }
+    preferred = [[NSUserDefaults standardUserDefaults] stringForKey:@"MGTAU_LoadedModelName"];
+    if (preferred.length > 0 && [modelFiles containsObject:preferred]) {
+        return preferred;
+    }
+    if ([modelFiles containsObject:@"mrt2_small"]) {
+        return @"mrt2_small";
+    }
+    return modelFiles[0];
 }
 
 // ─── Dev server probe ────────────────────────────────────────────────────────
@@ -201,7 +249,6 @@ static BOOL isDevServerRunning(void) {
 - (void)saveLoadedModelBookmarkForURL:(NSURL*)modelURL modelName:(NSString*)modelName;
 - (void)autoLoadSavedModelIfNeeded;
 - (void)tryAutoLoadFromModelsDirectory;
-- (void)promptForModelsFolderIfNeeded;
 - (BOOL)decodeAudioPromptAtURL:(NSURL*)url
                            index:(int)index
                         filename:(NSString*)fallbackName;
@@ -220,7 +267,6 @@ static BOOL isDevServerRunning(void) {
     NSString* _modelName;
     NSString* _currentPromptText;
     BOOL _isPlaying;
-    BOOL _promptedForModelsFolder;
 }
 
 // ─── Parameter bridging ──────────────────────────────────────────────────────
@@ -519,7 +565,8 @@ static BOOL isDevServerRunning(void) {
     state[@"hostMode"] = @"auv3";
     state[@"computerKeyboardMidi"] = @YES;
 
-    state[@"resourcesMissing"] = @(![MagentaModelDownloader areSharedResourcesValid]);
+    MGRTEnsureCustomResourcesPath();
+    state[@"resourcesMissing"] = @(!MGRTSharedResourcesAvailable([self jamAU]));
 
     [self sendStateUpdate:state];
     [self handleListLocalModels];
@@ -903,6 +950,7 @@ static BOOL isDevServerRunning(void) {
 
         [self notifyModelLoaded:mlxfnPath.lastPathComponent];
         [[NSUserDefaults standardUserDefaults] setObject:mlxfnPath forKey:@"MGTAU_ModelPath"];
+        [self sendStateUpdate:@{@"resourcesMissing": @NO}];
     } else {
         [self sendStateUpdate:@{@"modelName": [NSString stringWithFormat:@"Failed: %@", mlxfnPath.lastPathComponent]}];
     }
@@ -978,27 +1026,19 @@ static BOOL isDevServerRunning(void) {
     RealtimeRunner* engine = [self engine];
     if (!engine || engine->is_loaded()) return;
 
+    MGRTEnsureCustomResourcesPath();
+
     BOOL accessGranted = NO;
     NSURL* scopedBase = nil;
     NSURL* modelsDir = MGRTResolveModelsDirectory(&accessGranted, &scopedBase);
     NSArray<NSString*>* modelFiles = [MagentaModelManager listLocalModelsInDirectory:modelsDir];
     if (modelFiles.count == 0) {
         if (accessGranted && scopedBase) [scopedBase stopAccessingSecurityScopedResource];
-        [self promptForModelsFolderIfNeeded];
+        NSLog(@"MagentaAU: tryAutoLoad — no models found (searched %@)", modelsDir.path);
         return;
     }
 
-    NSString* preferred = [[NSUserDefaults standardUserDefaults] stringForKey:@"MGTAU_LoadedModelName"];
-    if (!preferred) {
-        preferred = [[NSUserDefaults standardUserDefaults] stringForKey:@"LoadedModelName"];
-    }
-    if (!preferred || ![modelFiles containsObject:preferred]) {
-        preferred = @"mrt2_small";
-        if (![modelFiles containsObject:preferred]) {
-            preferred = modelFiles[0];
-        }
-    }
-
+    NSString* preferred = MGRTPreferredModelName(modelFiles);
     NSURL* modelURL = [modelsDir URLByAppendingPathComponent:preferred];
     NSString* mlxfnPath = [self mlxfnPathForModelAtURL:modelURL];
     if (mlxfnPath && [self loadModelAtPath:mlxfnPath]) {
@@ -1008,14 +1048,6 @@ static BOOL isDevServerRunning(void) {
     if (accessGranted && scopedBase) {
         [scopedBase stopAccessingSecurityScopedResource];
     }
-}
-
-- (void)promptForModelsFolderIfNeeded {
-    if (_promptedForModelsFolder || MGRTModelsFolderBookmark()) return;
-    _promptedForModelsFolder = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self handleSelectDownloadFolder];
-    });
 }
 
 - (void)handleLoadModel {
@@ -1213,14 +1245,15 @@ static BOOL isDevServerRunning(void) {
                     }
                 }
 
+                MGRTEnsureCustomResourcesPath();
+                MagentaAUAudioUnit* au = [self jamAU];
                 [self sendStateUpdate:@{
                     @"downloadPath": selectedPath,
-                    @"resourcesMissing": @(![MagentaModelDownloader areSharedResourcesValid])
+                    @"resourcesMissing": @(!MGRTSharedResourcesAvailable(au))
                 }];
 
                 [self handleListLocalModels];
 
-                // Auto-load first model using security-scoped bookmark (not raw path).
                 BOOL accessGranted = NO;
                 NSURL* scopedBase = nil;
                 NSURL* modelsDir = MGRTResolveModelsDirectory(&accessGranted, &scopedBase);
@@ -1229,9 +1262,10 @@ static BOOL isDevServerRunning(void) {
                     [scopedBase stopAccessingSecurityScopedResource];
                 }
                 if (modelFiles.count > 0) {
-                    [self handleSelectModel:modelFiles[0]];
+                    NSString* preferred = MGRTPreferredModelName(modelFiles);
+                    [self handleSelectModel:preferred];
                 } else {
-                    NSLog(@"MagentaAU_AU: no models found under %@ (effective: %@)", selectedPath, modelsDir.path);
+                    NSLog(@"MagentaAU: no models found under %@ (effective: %@)", selectedPath, modelsDir.path);
                 }
             });
         } else if (error) {
@@ -1254,7 +1288,11 @@ static BOOL isDevServerRunning(void) {
         [scopedBase stopAccessingSecurityScopedResource];
     }
 
-    [self sendStateUpdate:@{@"localModels": modelFiles}];
+    NSMutableDictionary* update = [NSMutableDictionary dictionaryWithObject:modelFiles forKey:@"localModels"];
+    if (modelFiles.count > 0 && MGRTSharedResourcesAvailable([self jamAU])) {
+        update[@"resourcesMissing"] = @NO;
+    }
+    [self sendStateUpdate:update];
 }
 
 - (void)handleSelectModel:(NSString*)modelName {

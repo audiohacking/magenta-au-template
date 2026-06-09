@@ -60,6 +60,14 @@ if(EXISTS "${CORE_PATCH_DIR}/core/src/realtime_runner.cpp")
   message(STATUS "Applied core-patches overlay to magenta-realtime/core")
 endif()
 
+set(COMMON_PATCH_DIR "${CMAKE_SOURCE_DIR}/common-patches")
+if(EXISTS "${COMMON_PATCH_DIR}/examples/common/objc/MagentaModelDownloader.mm")
+  file(COPY "${COMMON_PATCH_DIR}/examples/common/objc/"
+       DESTINATION "${MAGENTA_RT_DIR}/examples/common/objc/"
+       FILES_MATCHING PATTERN "*")
+  message(STATUS "Applied common-patches overlay to magenta-realtime/examples/common/objc")
+endif()
+
 set(MAGENTART_VERSION "0.0.1")
 add_definitions(-DMAGENTART_VERSION="${MAGENTART_VERSION}")
 

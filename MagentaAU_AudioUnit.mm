@@ -878,6 +878,10 @@ static OSStatus ConverterDataProc(AudioConverterRef inAudioConverter,
 
 - (RealtimeRunner*)engine { return &_engine; }
 
+- (BOOL)hasInitializedAssets {
+    return _modelLoaded;
+}
+
 - (MagentaAUSharedState*)sharedState { return &_sharedState; }
 
 - (std::atomic<bool>*)soloMode { return &_soloMode; }
