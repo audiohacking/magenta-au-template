@@ -118,6 +118,30 @@ First paint can show onboarding or “Select model…” until the background lo
 
 **Future improvement:** await auto-load before first `sendStateUpdate`, or send a single consolidated state after bootstrap completes.
 
+### 6. Early `init_assets` at AU construction
+
+`init_assets` ran in `initWithComponentDescription:` before `MGRTEnsureCustomResourcesPath()` could resolve `~/Documents/Magenta/magenta-rt-v2/resources`. A stale or invalid `MagentaRT_CustomResourcesPath` from a prior install could leave the engine without tokenizer/MusicCoCa assets.
+
+**Fix:** Defer asset init to `-[MagentaAUAudioUnit ensureAssetsInitialized]`, retried from `connectToEngine`, `loadModelAtPath`, `tryAutoLoadFromModelsDirectory`, and DAW state restore (`applyCustomState`).
+
+### 7. `load_model` without asset retry
+
+`tryAutoLoadFromModelsDirectory` could find `mrt2_small` on disk, but `load_model` failed silently when assets were never initialized.
+
+**Fix:** `loadModelAtPath` calls `ensureAssetsInitialized` before `load_model`.
+
+### 8. Stale model bookmark dead-end
+
+If Logic restored a saved `modelBookmark` from a previous session, auto-load tried it, failed, and returned without scanning default paths. Removing and re-adding the plugin skipped the stale bookmark — which is why the second instance appeared to work.
+
+**Fix:** On bookmark resolve or load failure → fall through to `tryAutoLoadFromModelsDirectory` (default `~/Documents/Magenta/...` scan).
+
+### 9. Stale `MagentaRT_CustomResourcesPath`
+
+Invalid saved resource paths blocked rediscovery of valid defaults.
+
+**Fix:** `MGRTEnsureCustomResourcesPath` and `ensureAssetsInitialized` remove invalid `MagentaRT_CustomResourcesPath` from `NSUserDefaults` before resolving candidates.
+
 ---
 
 ## Files to change (checklist)
@@ -143,11 +167,13 @@ First paint can show onboarding or “Select model…” until the background lo
 - [ ] `MGRTSandboxAwareResourcesPath` — map user-picked folder to `resources` or `magenta-rt-v2/resources`
 - [ ] `MGRTSharedResourcesAvailable`
 - [ ] `MGRTPreferredModelName` — prefer `LoadedModelName`, else `mrt2_small`, else first found
-- [ ] `connectToAU` — call `MGRTEnsureCustomResourcesPath()` before `resourcesMissing`
-- [ ] `tryAutoLoadFromModelsDirectory` — call `MGRTEnsureCustomResourcesPath()`; load preferred model on background queue
-- [ ] `handleListLocalModels` — push `resourcesMissing: false` when models exist
-- [ ] `loadModelAtPath` — push `resourcesMissing: false` on success
-- [ ] `hasInitializedAssets` on `AUAudioUnit` subclass (wraps `_modelLoaded`)
+- [x] `connectToEngine` — `MGRTEnsureCustomResourcesPath()` + `ensureAssetsInitialized` before auto-load (sync)
+- [x] `tryAutoLoadFromModelsDirectory` — `MGRTEnsureCustomResourcesPath()` + `ensureAssetsInitialized`
+- [x] `handleListLocalModels` — push `resourcesMissing: false` when models exist
+- [x] `loadModelAtPath` — `ensureAssetsInitialized` first; push `resourcesMissing: false` on success
+- [x] `hasInitializedAssets` / `ensureAssetsInitialized` on `MagentaAUAudioUnit` (wraps `_modelLoaded`)
+- [x] Bookmark load failure → `tryAutoLoadFromModelsDirectory`
+- [x] Defer `init_assets` from AU `init` to `ensureAssetsInitialized`
 
 ### React UI (`react_ui/src/App.tsx`)
 
@@ -179,17 +205,20 @@ Save bookmarks with `NSURLBookmarkCreationWithSecurityScope`. Resolve with `NSUR
 
 ```
 AU init
-  └─ init_assets(resourcesPath)     // default or MagentaRT_CustomResourcesPath
+  └─ ensureAssetsInitialized (best-effort; may defer)
 
 WebView loads → React posts uiReady
-  └─ connectToAU
-       ├─ MGRTEnsureCustomResourcesPath()
+  └─ connectToEngine
+       ├─ MGRTEnsureCustomResourcesPath()   // clears stale MagentaRT_CustomResourcesPath
+       ├─ ensureAssetsInitialized()         // sync before auto-load
        ├─ resourcesMissing = !MGRTSharedResourcesAvailable(au)
        ├─ handleListLocalModels() → localModels[]
-       └─ autoLoadSavedModelIfNeeded() [async]
-            ├─ resolve LoadedModelBookmark OR scan MGRTResolveModelsDirectory
-            ├─ prefer mrt2_small
-            └─ loadModelAtPath → modelName, resourcesMissing: false
+       └─ autoLoadSavedModelIfNeeded()
+            ├─ try AU/NSUserDefaults model bookmark
+            │    └─ on failure → tryAutoLoadFromModelsDirectory
+            ├─ scan MGRTResolveModelsDirectory
+            ├─ prefer mrt2_small (MGRTPreferredModelName)
+            └─ loadModelAtPath (ensureAssetsInitialized → load_model)
 ```
 
 User should **not** need to pick a folder if assets already live under `~/Documents/Magenta/`.

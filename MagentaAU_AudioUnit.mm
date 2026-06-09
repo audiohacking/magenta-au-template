@@ -92,15 +92,9 @@
     _cfgNotesSliderValue.store(savedCfgNotes > 0.0f ? savedCfgNotes : kMagentaDefaultCfgNotes,
                                std::memory_order_relaxed);
 
-    NSString* customResources = [[NSUserDefaults standardUserDefaults] stringForKey:@"MagentaRT_CustomResourcesPath"];
-    std::string resourcesPath = customResources
-        ? std::string(customResources.UTF8String)
-        : magentart::paths::get_resources_dir();
-    if (_engine.init_assets(resourcesPath.c_str())) {
-        _modelLoaded = YES;
-        _engine.load_musiccoca_model(resourcesPath.c_str(), "musiccoca");
-    } else {
-        NSLog(@"MagentaAU_AU: Failed to load static assets externally from: %s", resourcesPath.c_str());
+    // Assets are finalized in ensureAssetsInitialized (retried from connectToEngine / loadModelAtPath).
+    if (![self ensureAssetsInitialized]) {
+        NSLog(@"MagentaAU: init_assets deferred — will retry when UI connects");
     }
 
     auto makeParam = ^(NSString* ident, NSString* name, AUParameterAddress addr, float min, float max, float def) {
@@ -433,12 +427,17 @@
                 } else {
                 // Perform async load so we don't block AU initialization
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    if (![self ensureAssetsInitialized]) {
+                        NSLog(@"MagentaAU: DAW state model load skipped — assets not ready");
+                        [url stopAccessingSecurityScopedResource];
+                        return;
+                    }
                     BOOL success = self->_engine.load_model(mlxfnPath.UTF8String);
                     if (success) {
                         [self applyPromptTextToEngine:self.promptText];
-                        NSLog(@"MagentaAU_AU: Successfully auto-loaded model from bookmark.");
+                        NSLog(@"MagentaAU: Successfully auto-loaded model from bookmark.");
                     } else {
-                        NSLog(@"MagentaAU_AU: Failed to auto-load model from bookmark.");
+                        NSLog(@"MagentaAU: Failed to auto-load model from bookmark.");
                     }
                     [url stopAccessingSecurityScopedResource];
                 });
@@ -879,6 +878,54 @@ static OSStatus ConverterDataProc(AudioConverterRef inAudioConverter,
 - (RealtimeRunner*)engine { return &_engine; }
 
 - (BOOL)hasInitializedAssets {
+    return _modelLoaded;
+}
+
+- (BOOL)ensureAssetsInitialized {
+    NSString* current = [[NSUserDefaults standardUserDefaults] objectForKey:@"MagentaRT_CustomResourcesPath"];
+    if (current.length > 0 && ![MagentaModelDownloader resourcesValidAtPath:current]) {
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"MagentaRT_CustomResourcesPath"];
+        current = nil;
+    }
+    if (current.length == 0) {
+        for (NSString* path in [MagentaModelDownloader defaultResourceSearchPaths]) {
+            if ([MagentaModelDownloader resourcesValidAtPath:path]) {
+                [[NSUserDefaults standardUserDefaults] setObject:path forKey:@"MagentaRT_CustomResourcesPath"];
+                current = path;
+                NSLog(@"MagentaAU: using resources at %@", path);
+                break;
+            }
+        }
+    }
+
+    NSString* resourcesPath = current;
+    if (resourcesPath.length == 0 || ![MagentaModelDownloader resourcesValidAtPath:resourcesPath]) {
+        for (NSString* path in [MagentaModelDownloader defaultResourceSearchPaths]) {
+            if ([MagentaModelDownloader resourcesValidAtPath:path]) {
+                resourcesPath = path;
+                break;
+            }
+        }
+        if (resourcesPath.length == 0) {
+            resourcesPath = [NSString stringWithUTF8String:magentart::paths::get_resources_dir().c_str()];
+        }
+    }
+    if (resourcesPath.length == 0 || ![MagentaModelDownloader resourcesValidAtPath:resourcesPath]) {
+        return NO;
+    }
+
+    if (_modelLoaded) {
+        return YES;
+    }
+
+    _modelLoaded = _engine.init_assets(resourcesPath.UTF8String);
+    if (_modelLoaded) {
+        [[NSUserDefaults standardUserDefaults] setObject:resourcesPath forKey:@"MagentaRT_CustomResourcesPath"];
+        _engine.load_musiccoca_model(resourcesPath.UTF8String, "musiccoca");
+        NSLog(@"MagentaAU: ensureAssetsInitialized OK at %@", resourcesPath);
+    } else {
+        NSLog(@"MagentaAU: ensureAssetsInitialized FAILED at %@", resourcesPath);
+    }
     return _modelLoaded;
 }
 

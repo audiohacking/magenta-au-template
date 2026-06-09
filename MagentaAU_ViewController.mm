@@ -150,6 +150,9 @@ static void MGRTEnsureCustomResourcesPath(void) {
     if (current.length > 0 && [MagentaModelDownloader resourcesValidAtPath:current]) {
         return;
     }
+    if (current.length > 0) {
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"MagentaRT_CustomResourcesPath"];
+    }
     NSString* resolved = MGRTResolveResourcesPath();
     if ([MagentaModelDownloader resourcesValidAtPath:resolved]) {
         [[NSUserDefaults standardUserDefaults] setObject:resolved forKey:@"MagentaRT_CustomResourcesPath"];
@@ -566,7 +569,8 @@ static BOOL isDevServerRunning(void) {
     state[@"computerKeyboardMidi"] = @YES;
 
     MGRTEnsureCustomResourcesPath();
-    state[@"resourcesMissing"] = @(!MGRTSharedResourcesAvailable([self jamAU]));
+    [jamAU ensureAssetsInitialized];
+    state[@"resourcesMissing"] = @(!MGRTSharedResourcesAvailable(jamAU));
 
     [self sendStateUpdate:state];
     [self handleListLocalModels];
@@ -914,8 +918,14 @@ static BOOL isDevServerRunning(void) {
 }
 
 - (BOOL)loadModelAtPath:(NSString*)mlxfnPath {
+    MagentaAUAudioUnit* au = [self jamAU];
     RealtimeRunner* engine = [self engine];
-    if (!engine || !mlxfnPath) return NO;
+    if (!au || !engine || !mlxfnPath) return NO;
+
+    if (![au ensureAssetsInitialized]) {
+        NSLog(@"MagentaAU: loadModelAtPath skipped — shared assets not initialized");
+        return NO;
+    }
 
     NSLog(@"MagentaAU: Loading model from %@", mlxfnPath);
     BOOL success = engine->load_model(mlxfnPath.UTF8String);
@@ -973,15 +983,24 @@ static BOOL isDevServerRunning(void) {
                                                      error:&error];
             if (url && [url startAccessingSecurityScopedResource]) {
                 NSString* mlxfnPath = [self mlxfnPathForModelAtURL:url];
-                if (mlxfnPath && [self loadModelAtPath:mlxfnPath]) {
+                BOOL loaded = mlxfnPath && [self loadModelAtPath:mlxfnPath];
+                if (loaded) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         [self saveLoadedModelBookmarkForURL:url modelName:au.modelName ?: mlxfnPath.lastPathComponent];
+                    });
+                } else {
+                    NSLog(@"MagentaAU: AU model bookmark load failed, scanning default paths");
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self tryAutoLoadFromModelsDirectory];
                     });
                 }
                 [url stopAccessingSecurityScopedResource];
                 return;
             }
-            NSLog(@"MagentaAU_AU: Failed to resolve AU model bookmark: %@", error);
+            NSLog(@"MagentaAU: Failed to resolve AU model bookmark: %@", error);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self tryAutoLoadFromModelsDirectory];
+            });
         });
         return;
     }
@@ -998,7 +1017,8 @@ static BOOL isDevServerRunning(void) {
                                                      error:&error];
             if (url && [url startAccessingSecurityScopedResource]) {
                 NSString* mlxfnPath = [self mlxfnPathForModelAtURL:url];
-                if (mlxfnPath && [self loadModelAtPath:mlxfnPath]) {
+                BOOL loaded = mlxfnPath && [self loadModelAtPath:mlxfnPath];
+                if (loaded) {
                     NSString* savedModelName = [[NSUserDefaults standardUserDefaults] stringForKey:@"MGTAU_LoadedModelName"];
                     if (!savedModelName) {
                         savedModelName = [[NSUserDefaults standardUserDefaults] stringForKey:@"LoadedModelName"];
@@ -1007,11 +1027,16 @@ static BOOL isDevServerRunning(void) {
                         [self saveLoadedModelBookmarkForURL:url
                                                   modelName:savedModelName ?: mlxfnPath.lastPathComponent];
                     });
+                } else {
+                    NSLog(@"MagentaAU: saved model bookmark load failed, scanning default paths");
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self tryAutoLoadFromModelsDirectory];
+                    });
                 }
                 [url stopAccessingSecurityScopedResource];
                 return;
             }
-            NSLog(@"MagentaAU_AU: Failed to resolve saved model bookmark: %@", error);
+            NSLog(@"MagentaAU: Failed to resolve saved model bookmark: %@", error);
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self tryAutoLoadFromModelsDirectory];
             });
@@ -1019,14 +1044,20 @@ static BOOL isDevServerRunning(void) {
         return;
     }
 
-    [self tryAutoLoadFromModelsDirectory];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self tryAutoLoadFromModelsDirectory];
+        });
+    });
 }
 
 - (void)tryAutoLoadFromModelsDirectory {
+    MagentaAUAudioUnit* au = [self jamAU];
     RealtimeRunner* engine = [self engine];
-    if (!engine || engine->is_loaded()) return;
+    if (!au || !engine || engine->is_loaded()) return;
 
     MGRTEnsureCustomResourcesPath();
+    [au ensureAssetsInitialized];
 
     BOOL accessGranted = NO;
     NSURL* scopedBase = nil;
@@ -1234,19 +1265,10 @@ static BOOL isDevServerRunning(void) {
                 MGRTSaveModelsFolderBookmark(selectedPath, bookmarkData);
 
                 NSString *resourcesPathToLoad = MGRTSandboxAwareResourcesPath(selectedPath);
+                [[NSUserDefaults standardUserDefaults] setObject:resourcesPathToLoad forKey:@"MagentaRT_CustomResourcesPath"];
 
-                RealtimeRunner* engine = [self engine];
-                if (engine) {
-                    if (!engine->init_assets(resourcesPathToLoad.UTF8String)) {
-                        NSLog(@"MagentaAU_AU: Failed to initialize assets from path: %@", resourcesPathToLoad);
-                    } else {
-                        NSLog(@"MagentaAU_AU: Successfully initialized assets from path: %@", resourcesPathToLoad);
-                        [[NSUserDefaults standardUserDefaults] setObject:resourcesPathToLoad forKey:@"MagentaRT_CustomResourcesPath"];
-                    }
-                }
-
-                MGRTEnsureCustomResourcesPath();
                 MagentaAUAudioUnit* au = [self jamAU];
+                [au ensureAssetsInitialized];
                 [self sendStateUpdate:@{
                     @"downloadPath": selectedPath,
                     @"resourcesMissing": @(!MGRTSharedResourcesAvailable(au))
